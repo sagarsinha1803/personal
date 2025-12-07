@@ -1,209 +1,79 @@
-import React, { useState } from "react";
+const sendMessage = async () => {
+  if (!input.trim()) return;
 
-export default function App() {
-  const [input, setInput] = useState("");
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [interrupt, setInterrupt] = useState(null);
+  // Add user's message
+  setMessages((prev) => [...prev, { sender: "user", text: input }]);
 
-  const sendMessage = async () => {
-    if (!input.trim()) return;
-
-    // Add user message
-    setMessages((prev) => [...prev, { sender: "user", text: input }]);
-
-    const payload = {
-      message: input,            // 🔥 message POST body me jaa raha hai
-      protected_mode: false,
-      checkpoint_id: null
-    };
-
-    setInput("");
-    setLoading(true);
-
-    // 🔥 POST request with streaming response
-    const response = await fetch("http://localhost:8000/agent/chat_stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-
-    // 🔥 CONTINUOUS STREAM READER
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value, { stream: true });
-
-      // Split SSE-like lines
-      const lines = chunk.split("\n");
-
-      for (let line of lines) {
-        if (!line.startsWith("data:")) continue;
-
-        const jsonStr = line.replace("data:", "").trim();
-        if (!jsonStr) continue;
-
-        let event;
-        try {
-          event = JSON.parse(jsonStr);
-        } catch {
-          continue;
-        }
-
-        // 🔵 Normal AI response
-        if (event.type === "message") {
-          setMessages((prev) => [...prev, { sender: "ai", text: event.content }]);
-        }
-
-        // 🟣 Tool call response
-        if (event.type === "tool_call") {
-          setMessages((prev) => [
-            ...prev,
-            { sender: "ai", text: `🔧 Tool: ${event.tool} | Args: ${JSON.stringify(event.args)}` },
-          ]);
-        }
-
-        // 🔴 Human approval required (HITL)
-        if (event.type === "human_approval_required") {
-          setInterrupt(event.interrupt);
-
-          setMessages((prev) => [
-            ...prev,
-            { sender: "ai", text: "⚠ Human approval required. Waiting for your decision..." },
-          ]);
-
-          setLoading(false);
-          return; // Stop reading further
-        }
-
-        // AI finished
-        if (event.type === "end") {
-          setLoading(false);
-          return;
-        }
-      }
-    }
-
-    setLoading(false);
+  const payload = {
+    message: input,
+    protected_mode: false,
+    checkpoint_id: null,
   };
 
-  return (
-    <div style={styles.container}>
-      <h2>AI Assistant</h2>
+  setInput("");
+  setLoading(true);
 
-      <div style={styles.chatBox}>
-        {messages.map((msg, i) => (
-          <div
-            key={i}
-            style={msg.sender === "user" ? styles.userMsg : styles.aiMsg}
-          >
-            {msg.text}
-          </div>
-        ))}
-        {loading && <div style={styles.loader}>Typing...</div>}
-      </div>
+  const response = await fetch("http://localhost:8000/agent/chat_stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
 
-      <div style={styles.inputRow}>
-        <input
-          style={styles.input}
-          value={input}
-          placeholder="Type a message..."
-          onChange={(e) => setInput(e.target.value)}
-        />
-        <button style={styles.sendBtn} onClick={sendMessage}>
-          Send
-        </button>
-      </div>
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
 
-      {/* Human Approval Modal */}
-      {interrupt && (
-        <div style={styles.modalBG}>
-          <div style={styles.modal}>
-            <h3>⚠ Human Approval Needed</h3>
-            <pre style={styles.codeBox}>
-{JSON.stringify(interrupt, null, 2)}
-            </pre>
+  // 🔥 Create ONE empty AI bubble
+  let aiIndex = null;
+  setMessages((prev) => {
+    aiIndex = prev.length;
+    return [...prev, { sender: "ai", text: "" }];
+  });
 
-            <button style={styles.greenBtn}>
-              ✔ Continue (call your resume API here)
-            </button>
-            <button style={styles.redBtn}>
-              ❌ Reject (call your resume API here)
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
 
-// UI styles
-const styles = {
-  container: { width: "600px", margin: "40px auto", fontFamily: "Arial" },
-  chatBox: {
-    height: "450px",
-    overflowY: "auto",
-    border: "1px solid #ddd",
-    padding: "10px",
-    borderRadius: "8px",
-    marginBottom: "12px",
-  },
-  userMsg: {
-    textAlign: "right",
-    background: "#4f46e5",
-    color: "white",
-    padding: "10px",
-    borderRadius: "10px",
-    margin: "8px 0",
-    marginLeft: "100px",
-  },
-  aiMsg: {
-    textAlign: "left",
-    background: "#e4e4e7",
-    padding: "10px",
-    borderRadius: "10px",
-    margin: "8px 0",
-    marginRight: "100px",
-  },
-  loader: { marginTop: 5, color: "#777" },
-  inputRow: { display: "flex", gap: "10px" },
-  input: { flex: 1, padding: "12px", borderRadius: "8px", border: "1px solid #ccc" },
-  sendBtn: {
-    padding: "12px 20px",
-    background: "#4f46e5",
-    color: "white",
-    borderRadius: "8px",
-    border: "none",
-    cursor: "pointer",
-  },
-  modalBG: {
-    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-    background: "rgba(0,0,0,0.4)",
-    display: "flex", justifyContent: "center", alignItems: "center",
-  },
-  modal: {
-    background: "white", padding: "20px", width: "360px",
-    borderRadius: "12px",
-  },
-  codeBox: {
-    background: "#f4f4f4",
-    padding: "10px",
-    borderRadius: "8px",
-    height: "150px",
-    overflowY: "auto",
-  },
-  greenBtn: {
-    background: "#22c55e",
-    padding: "10px", borderRadius: "8px",
-    color: "white", width: "100%", marginTop: "10px",
-  },
-  redBtn: {
-    background: "#ef4444",
-    padding: "10px", borderRadius: "8px",
-    color: "white", width: "100%", marginTop: "10px",
-  },
+    const chunk = decoder.decode(value, { stream: true });
+    const lines = chunk.split("\n");
+
+    for (let line of lines) {
+      if (!line.startsWith("data:")) continue;
+
+      const json = line.replace("data:", "").trim();
+      if (!json) continue;
+
+      let event;
+      try {
+        event = JSON.parse(json);
+      } catch {
+        continue;
+      }
+
+      // 🟢 NORMAL AI STREAM TEXT → append
+      if (event.type === "message") {
+        setMessages((prev) => {
+          const updated = [...prev];
+          updated[aiIndex].text += event.content;   // append chunk!
+          return updated;
+        });
+      }
+
+      // 🟣 TOOL CALL
+      if (event.type === "tool_call") {
+        setMessages((prev) => [
+          ...prev,
+          { sender: "ai", text: `🛠 Tool: ${event.tool} | Args: ${JSON.stringify(event.args)}` },
+        ]);
+      }
+
+      // 🔴 HUMAN APPROVAL
+      if (event.type === "human_approval_required") {
+        setInterrupt(event.interrupt);
+        setLoading(false);
+        return;
+      }
+    }
+  }
+
+  setLoading(false);
 };
