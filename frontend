@@ -1,148 +1,209 @@
-import React, { useState, useRef } from "react";
+import React, { useState } from "react";
 
 export default function App() {
+  const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
-  const inputRef = useRef(null);
+  const [interrupt, setInterrupt] = useState(null);
 
   const sendMessage = async () => {
-    const text = inputRef.current.value.trim();
-    if (!text) return;
+    if (!input.trim()) return;
 
     // Add user message
-    setMessages((prev) => [...prev, { sender: "user", text }]);
-    inputRef.current.value = "";
+    setMessages((prev) => [...prev, { sender: "user", text: input }]);
 
+    const payload = {
+      message: input,            // 🔥 message POST body me jaa raha hai
+      protected_mode: false,
+      checkpoint_id: null
+    };
+
+    setInput("");
     setLoading(true);
 
-    // Start SSE stream
-    const stream = new EventSource(
-      `http://localhost:8000/agent/chat_stream?message=${encodeURIComponent(text)}`
-    );
+    // 🔥 POST request with streaming response
+    const response = await fetch("http://localhost:8000/agent/chat_stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
 
-    stream.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
 
-      // Normal AI Response
-      if (data.type === "ai_response") {
-        setMessages((prev) => [...prev, { sender: "ai", text: data.text }]);
+    // 🔥 CONTINUOUS STREAM READER
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+
+      // Split SSE-like lines
+      const lines = chunk.split("\n");
+
+      for (let line of lines) {
+        if (!line.startsWith("data:")) continue;
+
+        const jsonStr = line.replace("data:", "").trim();
+        if (!jsonStr) continue;
+
+        let event;
+        try {
+          event = JSON.parse(jsonStr);
+        } catch {
+          continue;
+        }
+
+        // 🔵 Normal AI response
+        if (event.type === "message") {
+          setMessages((prev) => [...prev, { sender: "ai", text: event.content }]);
+        }
+
+        // 🟣 Tool call response
+        if (event.type === "tool_call") {
+          setMessages((prev) => [
+            ...prev,
+            { sender: "ai", text: `🔧 Tool: ${event.tool} | Args: ${JSON.stringify(event.args)}` },
+          ]);
+        }
+
+        // 🔴 Human approval required (HITL)
+        if (event.type === "human_approval_required") {
+          setInterrupt(event.interrupt);
+
+          setMessages((prev) => [
+            ...prev,
+            { sender: "ai", text: "⚠ Human approval required. Waiting for your decision..." },
+          ]);
+
+          setLoading(false);
+          return; // Stop reading further
+        }
+
+        // AI finished
+        if (event.type === "end") {
+          setLoading(false);
+          return;
+        }
       }
+    }
 
-      // End streaming
-      if (data.type === "end") {
-        setLoading(false);
-        stream.close();
-      }
-    };
-
-    stream.onerror = () => {
-      stream.close();
-      setLoading(false);
-    };
+    setLoading(false);
   };
 
   return (
     <div style={styles.container}>
-      <h2 style={styles.header}>AI Assistant</h2>
+      <h2>AI Assistant</h2>
 
       <div style={styles.chatBox}>
         {messages.map((msg, i) => (
           <div
             key={i}
-            style={{
-              ...styles.bubble,
-              alignSelf: msg.sender === "user" ? "flex-end" : "flex-start",
-              background: msg.sender === "user" ? "#4f46e5" : "#e4e4e7",
-              color: msg.sender === "user" ? "white" : "black",
-            }}
+            style={msg.sender === "user" ? styles.userMsg : styles.aiMsg}
           >
             {msg.text}
           </div>
         ))}
-
-        {loading && (
-          <div style={styles.loaderContainer}>
-            <div style={styles.dot}></div>
-            <div style={{ ...styles.dot, animationDelay: "0.2s" }}></div>
-            <div style={{ ...styles.dot, animationDelay: "0.4s" }}></div>
-          </div>
-        )}
+        {loading && <div style={styles.loader}>Typing...</div>}
       </div>
 
-      <div style={styles.inputBox}>
+      <div style={styles.inputRow}>
         <input
-          ref={inputRef}
-          type="text"
-          placeholder="Type a message..."
           style={styles.input}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          value={input}
+          placeholder="Type a message..."
+          onChange={(e) => setInput(e.target.value)}
         />
-        <button style={styles.button} onClick={sendMessage}>
+        <button style={styles.sendBtn} onClick={sendMessage}>
           Send
         </button>
       </div>
+
+      {/* Human Approval Modal */}
+      {interrupt && (
+        <div style={styles.modalBG}>
+          <div style={styles.modal}>
+            <h3>⚠ Human Approval Needed</h3>
+            <pre style={styles.codeBox}>
+{JSON.stringify(interrupt, null, 2)}
+            </pre>
+
+            <button style={styles.greenBtn}>
+              ✔ Continue (call your resume API here)
+            </button>
+            <button style={styles.redBtn}>
+              ❌ Reject (call your resume API here)
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
+// UI styles
 const styles = {
-  container: {
-    width: "600px",
-    margin: "auto",
-    padding: "20px",
-    fontFamily: "Arial, sans-serif",
-  },
-  header: {
-    textAlign: "center",
-  },
+  container: { width: "600px", margin: "40px auto", fontFamily: "Arial" },
   chatBox: {
     height: "450px",
-    border: "1px solid #ddd",
-    borderRadius: "10px",
-    padding: "15px",
-    display: "flex",
-    flexDirection: "column",
-    gap: "10px",
     overflowY: "auto",
-    background: "#fafafa",
-  },
-  bubble: {
-    maxWidth: "75%",
-    padding: "12px 16px",
-    borderRadius: "12px",
-    fontSize: "14px",
-  },
-  loaderContainer: {
-    display: "flex",
-    gap: "6px",
-    marginTop: "5px",
-    alignSelf: "flex-start",
-  },
-  dot: {
-    width: "8px",
-    height: "8px",
-    borderRadius: "50%",
-    background: "#4f46e5",
-    animation: "typing 0.7s infinite alternate",
-  },
-  inputBox: {
-    marginTop: "15px",
-    display: "flex",
-    gap: "10px",
-  },
-  input: {
-    flex: 1,
-    padding: "12px",
+    border: "1px solid #ddd",
+    padding: "10px",
     borderRadius: "8px",
-    border: "1px solid #ccc",
+    marginBottom: "12px",
   },
-  button: {
-    padding: "12px 18px",
+  userMsg: {
+    textAlign: "right",
     background: "#4f46e5",
     color: "white",
-    border: "none",
+    padding: "10px",
+    borderRadius: "10px",
+    margin: "8px 0",
+    marginLeft: "100px",
+  },
+  aiMsg: {
+    textAlign: "left",
+    background: "#e4e4e7",
+    padding: "10px",
+    borderRadius: "10px",
+    margin: "8px 0",
+    marginRight: "100px",
+  },
+  loader: { marginTop: 5, color: "#777" },
+  inputRow: { display: "flex", gap: "10px" },
+  input: { flex: 1, padding: "12px", borderRadius: "8px", border: "1px solid #ccc" },
+  sendBtn: {
+    padding: "12px 20px",
+    background: "#4f46e5",
+    color: "white",
     borderRadius: "8px",
+    border: "none",
     cursor: "pointer",
-    fontWeight: "bold",
+  },
+  modalBG: {
+    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+    background: "rgba(0,0,0,0.4)",
+    display: "flex", justifyContent: "center", alignItems: "center",
+  },
+  modal: {
+    background: "white", padding: "20px", width: "360px",
+    borderRadius: "12px",
+  },
+  codeBox: {
+    background: "#f4f4f4",
+    padding: "10px",
+    borderRadius: "8px",
+    height: "150px",
+    overflowY: "auto",
+  },
+  greenBtn: {
+    background: "#22c55e",
+    padding: "10px", borderRadius: "8px",
+    color: "white", width: "100%", marginTop: "10px",
+  },
+  redBtn: {
+    background: "#ef4444",
+    padding: "10px", borderRadius: "8px",
+    color: "white", width: "100%", marginTop: "10px",
   },
 };
