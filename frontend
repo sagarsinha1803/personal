@@ -1,37 +1,42 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 export default function App() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
+  const toolOutputRef = useRef(""); // store streaming tool output
 
-  // Add greeting on first render
+  // ---------------------------------------------
+  // 1️⃣ Auto Greeting Message on Chat Start
+  // ---------------------------------------------
   useEffect(() => {
     setMessages([
       {
         type: "ai",
         text:
-          "Hello! 👋 I’m your AI Assistant.\n\n" +
-          "I can help you with device details, troubleshooting, SSH tasks, automation and more.\n" +
-          "How can I assist you today? 😊",
+          "Hello! 👋 I'm your AI Assistant.\nI can help you with device info, troubleshooting, SSH automation and more.\n\nHow can I assist you today? 😊",
       },
     ]);
   }, []);
 
+  // ---------------------------------------------
+  // 2️⃣ Send Message to Backend (POST + Streaming)
+  // ---------------------------------------------
   const sendMessage = async () => {
     if (!input.trim()) return;
 
-    // Add user msg
-    setMessages((prev) => [...prev, { type: "user", text: input }]);
+    const userMsg = input;
+    setMessages((prev) => [...prev, { type: "user", text: userMsg }]);
 
     const payload = {
-      message: input,
+      message: userMsg,
       protected_mode: false,
       checkpoint_id: null,
     };
 
     setInput("");
     setLoading(true);
+    toolOutputRef.current = "";
 
     const response = await fetch("http://localhost:8000/agent/chat_stream", {
       method: "POST",
@@ -40,24 +45,13 @@ export default function App() {
     });
 
     const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-
-    // Placeholder AI message for streaming
-    let aiMessageIndex = null;
-    let aiAccumulated = "";
-    let toolOutput = "";
-    let toolCallActive = false;
-
-    setMessages((prev) => {
-      aiMessageIndex = prev.length;
-      return [...prev, { type: "ai", text: "" }];
-    });
+    const decoder = new TextDecoder();
 
     while (true) {
-      const { done, value } = await reader.read();
+      const { value, done } = await reader.read();
       if (done) break;
 
-      const chunk = decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value);
       const lines = chunk.split("\n");
 
       for (let line of lines) {
@@ -73,54 +67,65 @@ export default function App() {
           continue;
         }
 
-        // -----------------------------
-        // TOOL CALL
-        // -----------------------------
+        // -------------------------------------------------
+        // 🛠️ TOOL CALL EVENT — Insert tool bubble AFTER user
+        // -------------------------------------------------
         if (event.type === "tool_call") {
-          toolCallActive = true;
-
-          const toolCallMsg = {
+          const toolBubble = {
             type: "tool_call",
             tool: event.tool,
             args: event.args,
           };
 
-          // Insert tool call BELOW user's request
-          setMessages((prev) => [...prev, toolCallMsg]);
+          setMessages((prev) => {
+            const lastUserIndex = prev.map(m => m.type).lastIndexOf("user");
+
+            const before = prev.slice(0, lastUserIndex + 1);
+            const after = prev.slice(lastUserIndex + 1);
+
+            return [...before, toolBubble, ...after];
+          });
+
           continue;
         }
 
-        // -----------------------------
-        // TOOL OUTPUT (as message chunks)
-        // -----------------------------
+        // -------------------------------------------------
+        // 📄 TOOL OUTPUT — append chunk to output buffer
+        // -------------------------------------------------
         if (event.type === "message") {
-          if (toolCallActive) {
-            toolOutput += event.content;
-          } else {
-            aiAccumulated += event.content;
-
-            setMessages((prev) => {
-              const updated = [...prev];
-              updated[aiMessageIndex] = { type: "ai", text: aiAccumulated };
-              return updated;
-            });
-          }
+          toolOutputRef.current += event.content;
+          continue;
         }
       }
     }
 
-    setLoading(false);
+    // -------------------------------------------------
+    // After streaming ends → Insert tool_output BELOW tool_call
+    // -------------------------------------------------
+    if (toolOutputRef.current.trim() !== "") {
+      const finalOutputBubble = {
+        type: "tool_output",
+        text: toolOutputRef.current,
+      };
 
-    // After stream ends — insert tool output below tool call
-    if (toolOutput.trim() !== "") {
-      setMessages((prev) => [
-        ...prev,
-        { type: "tool_output", text: toolOutput },
-      ]);
+      setMessages((prev) => {
+        const lastToolIndex = prev.map(m => m.type).lastIndexOf("tool_call");
+
+        if (lastToolIndex === -1) return [...prev, finalOutputBubble];
+
+        const before = prev.slice(0, lastToolIndex + 1);
+        const after = prev.slice(lastToolIndex + 1);
+
+        return [...before, finalOutputBubble, ...after];
+      });
     }
+
+    setLoading(false);
   };
 
-  // UI for each bubble
+  // -------------------------------------------------
+  // 🔵 RENDER BUBBLES
+  // -------------------------------------------------
   const renderBubble = (msg) => {
     if (msg.type === "user")
       return <div style={styles.userMsg}>{msg.text}</div>;
@@ -128,7 +133,7 @@ export default function App() {
     if (msg.type === "ai")
       return (
         <div style={styles.aiMsg}>
-          <pre style={{ whiteSpace: "pre-wrap" }}>{msg.text}</pre>
+          <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>{msg.text}</pre>
         </div>
       );
 
@@ -159,7 +164,7 @@ export default function App() {
           <div key={idx}>{renderBubble(msg)}</div>
         ))}
 
-        {loading && <div style={styles.loading}>Typing...</div>}
+        {loading && <div style={styles.loading}>Processing...</div>}
       </div>
 
       <div style={styles.inputBar}>
@@ -177,62 +182,61 @@ export default function App() {
   );
 }
 
-/* ================================
-   STYLES
-================================ */
+// ---------------------------------------------
+// 🎨 SIMPLE STYLES
+// ---------------------------------------------
 const styles = {
   page: {
-    width: "800px",
+    width: "750px",
     margin: "40px auto",
     fontFamily: "Arial",
   },
-  title: { textAlign: "center", marginBottom: "15px" },
-
+  title: {
+    textAlign: "center",
+    marginBottom: "10px",
+  },
   chatBox: {
-    height: "550px",
+    height: "540px",
     overflowY: "auto",
-    border: "1px solid #ccc",
-    borderRadius: "10px",
     padding: "15px",
+    border: "1px solid #ddd",
+    borderRadius: "12px",
     background: "#fafafa",
   },
 
   userMsg: {
+    textAlign: "right",
     background: "#4f46e5",
     color: "white",
-    padding: "10px 14px",
+    padding: "10px 15px",
     borderRadius: "10px",
-    marginTop: "10px",
-    marginLeft: "200px",
-    textAlign: "right",
+    margin: "8px 0 8px 150px",
   },
-
   aiMsg: {
-    background: "#e5e7eb",
-    padding: "10px 14px",
-    borderRadius: "10px",
-    marginTop: "10px",
-    marginRight: "200px",
     textAlign: "left",
+    background: "#e5e7eb",
+    padding: "10px 15px",
+    borderRadius: "10px",
+    margin: "8px 150px 8px 0",
   },
 
   toolCall: {
-    background: "#fff4cc",
-    border: "1px solid #e6c76f",
+    background: "#fff3d4",
+    borderLeft: "5px solid #f0c36d",
     padding: "12px",
-    borderRadius: "10px",
-    marginTop: "10px",
+    borderRadius: "8px",
+    margin: "10px 0",
   },
 
   toolOutput: {
-    background: "#e6f2ff",
-    border: "1px solid #a7cfff",
+    background: "#e7f2ff",
+    borderLeft: "5px solid #82baff",
     padding: "12px",
-    borderRadius: "10px",
-    marginTop: "10px",
+    borderRadius: "8px",
+    margin: "10px 0",
   },
 
-  loading: { color: "#777", marginTop: "10px" },
+  loading: { marginTop: "10px", color: "#777" },
 
   inputBar: { display: "flex", marginTop: "15px" },
   input: {
@@ -242,8 +246,8 @@ const styles = {
     border: "1px solid #ccc",
   },
   sendBtn: {
-    padding: "12px 20px",
     marginLeft: "10px",
+    padding: "12px 25px",
     background: "#4f46e5",
     color: "white",
     borderRadius: "8px",
