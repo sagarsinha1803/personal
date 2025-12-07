@@ -1,44 +1,35 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 
 export default function App() {
   const [input, setInput] = useState("");
+  const [checkpointId, setCheckpointId] = useState("");
   const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  const [checkpointId, setCheckpointId] = useState(""); // ⭐ Visible input box ke liye
   const toolOutputRef = useRef("");
 
-  // -------------------------------------------------
-  // Auto greeting on load
-  // -------------------------------------------------
   useEffect(() => {
+    // Initial greeting message
     setMessages([
       {
         type: "ai",
-        text:
-          "Hello! 👋 I'm your AI Assistant.\nI can help you with device details, troubleshooting, SSH automation and more.\n\nHow can I assist you today? 😊",
+        text: `Hello! 👋 I'm your AI Assistant.\nI can help with device details, troubleshooting, SSH automation and more.\n\nHow can I assist you today? 😊`,
       },
     ]);
   }, []);
 
-  // -------------------------------------------------
-  // SEND MESSAGE
-  // -------------------------------------------------
   const sendMessage = async () => {
     if (!input.trim()) return;
 
     const userMsg = input;
+    setInput("");
+
+    // Add user message
     setMessages((prev) => [...prev, { type: "user", text: userMsg }]);
 
     const payload = {
       message: userMsg,
       protected_mode: false,
-      checkpoint_id: checkpointId || null, // ⭐ USER PROVIDED CHECKPOINT GOES HERE
+      checkpoint_id: checkpointId || null,
     };
-
-    setInput("");
-    setLoading(true);
-    toolOutputRef.current = "";
 
     const response = await fetch("http://localhost:8000/agent/chat_stream", {
       method: "POST",
@@ -48,6 +39,9 @@ export default function App() {
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+
+    let lastEventWasToolCall = false;
+    toolOutputRef.current = "";
 
     while (true) {
       const { value, done } = await reader.read();
@@ -59,7 +53,7 @@ export default function App() {
       for (let line of lines) {
         if (!line.startsWith("data:")) continue;
 
-        const jsonStr = line.replace("data:", "").trim();
+        let jsonStr = line.replace("data:", "").trim();
         if (!jsonStr) continue;
 
         let event;
@@ -69,14 +63,19 @@ export default function App() {
           continue;
         }
 
-        // ⭐ BACKEND CHECKPOINT → UPDATE UI INPUT ALSO
+        // 🧿 Save checkpoint_id if received
         if (event.checkpoint_id) {
           setCheckpointId(event.checkpoint_id);
         }
 
-        // 🛠 TOOL CALL
+        // ==================================================
+        // 🛠 TOOL CALL HANDLING
+        // Insert tool call **right after last user message**
+        // ==================================================
         if (event.type === "tool_call") {
-          const toolBubble = {
+          lastEventWasToolCall = true;
+
+          const toolCallBubble = {
             type: "tool_call",
             tool: event.tool,
             args: event.args,
@@ -86,98 +85,110 @@ export default function App() {
             const lastUserIndex = prev.map((m) => m.type).lastIndexOf("user");
             const before = prev.slice(0, lastUserIndex + 1);
             const after = prev.slice(lastUserIndex + 1);
-            return [...before, toolBubble, ...after];
+            return [...before, toolCallBubble, ...after];
           });
 
           continue;
         }
 
-        // 📄 TOOL OUTPUT STREAM APPEND
+        // ==================================================
+        // 📄 TOOL OUTPUT (the first message after tool_call)
+        // ==================================================
         if (event.type === "message") {
-          toolOutputRef.current += event.content;
+          if (lastEventWasToolCall) {
+            toolOutputRef.current += event.content;
+            continue;
+          }
+
+          // ==================================================
+          // 🤖 NORMAL AI MESSAGE
+          // ==================================================
+          setMessages((prev) => [
+            ...prev,
+            { type: "ai", text: event.content },
+          ]);
         }
       }
     }
 
-    // FINAL TOOL OUTPUT BUBBLE
-    if (toolOutputRef.current.trim() !== "") {
-      const outBubble = {
-        type: "tool_output",
-        text: toolOutputRef.current,
-      };
-
-      setMessages((prev) => {
-        const lastTool = prev.map((m) => m.type).lastIndexOf("tool_call");
-        if (lastTool === -1) return [...prev, outBubble];
-
-        const before = prev.slice(0, lastTool + 1);
-        const after = prev.slice(lastTool + 1);
-        return [...before, outBubble, ...after];
-      });
+    // After streaming ends → flush tool output as bubble
+    if (toolOutputRef.current) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          type: "tool_output",
+          text: toolOutputRef.current,
+        },
+      ]);
     }
-
-    setLoading(false);
   };
 
-  // -------------------------------------------------
-  // Render Message Bubbles
-  // -------------------------------------------------
+  // -------------------------------------------------------
+  // UI RENDER HELPERS
+  // -------------------------------------------------------
   const renderBubble = (msg) => {
-    if (msg.type === "user")
-      return <div style={styles.userMsg}>{msg.text}</div>;
+    switch (msg.type) {
+      case "user":
+        return <div style={styles.userMsg}>{msg.text}</div>;
 
-    if (msg.type === "ai")
-      return (
-        <div style={styles.aiMsg}>
-          <pre style={{ whiteSpace: "pre-wrap" }}>{msg.text}</pre>
-        </div>
-      );
+      case "ai":
+        return (
+          <div style={styles.aiMsg}>
+            <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{msg.text}</pre>
+          </div>
+        );
 
-    if (msg.type === "tool_call")
-      return (
-        <div style={styles.toolCall}>
-          <strong>🛠 TOOL CALL: {msg.tool}</strong>
-          <pre style={{ whiteSpace: "pre-wrap" }}>
-            {JSON.stringify(msg.args, null, 2)}
-          </pre>
-        </div>
-      );
+      case "tool_call":
+        return (
+          <div style={styles.toolCall}>
+            <strong>🛠 TOOL CALL: {msg.tool}</strong>
+            <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+              {JSON.stringify(msg.args, null, 2)}
+            </pre>
+          </div>
+        );
 
-    if (msg.type === "tool_output")
-      return (
-        <div style={styles.toolOutput}>
-          <pre style={{ whiteSpace: "pre-wrap" }}>{msg.text}</pre>
-        </div>
-      );
+      case "tool_output":
+        return (
+          <div style={styles.toolOutput}>
+            <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+              {msg.text}
+            </pre>
+          </div>
+        );
+
+      default:
+        return null;
+    }
   };
 
+  // -------------------------------------------------------
+  // UI COMPONENTS
+  // -------------------------------------------------------
   return (
     <div style={styles.page}>
-      <h2 style={styles.title}>AI Assistant</h2>
-
-      {/* ⭐ CHECKPOINT INPUT BOX */}
-      <div style={styles.checkpointRow}>
-        <label style={{ marginRight: "10px" }}>Checkpoint ID:</label>
-
+      <div style={styles.cpRow}>
+        <label>Checkpoint ID: </label>
         <input
           value={checkpointId}
           onChange={(e) => setCheckpointId(e.target.value)}
-          placeholder="Enter checkpoint ID"
-          style={styles.checkpointInput}
+          placeholder="Enter checkpoint id"
+          style={styles.cpInput}
         />
       </div>
 
+      <h2 style={styles.title}>AI Assistant</h2>
+
       <div style={styles.chatBox}>
-        {messages.map((msg, i) => (
-          <div key={i}>{renderBubble(msg)}</div>
+        {messages.map((msg, idx) => (
+          <div key={idx}>{renderBubble(msg)}</div>
         ))}
-        {loading && <div style={styles.loading}>Processing...</div>}
       </div>
 
       <div style={styles.inputBar}>
         <input
           style={styles.input}
-          placeholder="Type a message..."
+          placeholder="Type a message…"
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
@@ -189,90 +200,88 @@ export default function App() {
   );
 }
 
-// -------------------------------------------------
-// CSS
-// -------------------------------------------------
+// -------------------------------------------------------
 const styles = {
   page: {
-    width: "750px",
-    margin: "40px auto",
+    width: "900px",
+    margin: "20px auto",
     fontFamily: "Arial",
   },
-
   title: { textAlign: "center", marginBottom: "10px" },
 
-  checkpointRow: {
-    display: "flex",
-    alignItems: "center",
-    marginBottom: "8px",
-  },
-
-  checkpointInput: {
-    flex: 1,
-    padding: "8px",
-    borderRadius: "6px",
-    border: "1px solid #ccc",
-  },
-
   chatBox: {
-    height: "500px",
-    overflowY: "auto",
-    padding: "15px",
-    border: "1px solid #ddd",
+    height: "550px",
+    border: "1px solid #ccc",
     borderRadius: "12px",
+    padding: "15px",
+    overflowY: "auto",
     background: "#fafafa",
+  },
+
+  cpRow: {
+    marginBottom: "10px",
+    display: "flex",
+    gap: "10px",
+    alignItems: "center",
+  },
+
+  cpInput: {
+    padding: "6px 10px",
+    borderRadius: "6px",
+    border: "1px solid #aaa",
   },
 
   userMsg: {
     textAlign: "right",
     background: "#4f46e5",
     color: "white",
-    padding: "10px 15px",
+    padding: "10px 14px",
     borderRadius: "10px",
-    margin: "8px 0 8px 150px",
+    marginTop: "10px",
+    marginLeft: "200px",
   },
 
   aiMsg: {
     textAlign: "left",
     background: "#e5e7eb",
-    padding: "10px 15px",
+    padding: "10px 14px",
     borderRadius: "10px",
-    margin: "8px 150px 8px 0",
+    marginTop: "10px",
+    marginRight: "200px",
   },
 
   toolCall: {
-    background: "#fff3d4",
-    borderLeft: "5px solid #f0c36d",
-    padding: "12px",
-    borderRadius: "8px",
+    background: "#fff7db",
+    border: "1px solid #f4d27d",
+    padding: "10px",
+    borderRadius: "10px",
     marginTop: "10px",
   },
 
   toolOutput: {
     background: "#e7f2ff",
-    borderLeft: "5px solid #82baff",
+    border: "1px solid #a8d0ff",
     padding: "12px",
-    borderRadius: "8px",
+    borderRadius: "10px",
     marginTop: "10px",
   },
 
-  loading: { marginTop: "10px", color: "#777" },
-
-  inputBar: { display: "flex", marginTop: "15px" },
-
+  inputBar: {
+    display: "flex",
+    marginTop: "15px",
+  },
   input: {
     flex: 1,
     padding: "12px",
-    borderRadius: "8px",
+    borderRadius: "10px",
     border: "1px solid #ccc",
   },
-
   sendBtn: {
+    padding: "12px 20px",
     marginLeft: "10px",
-    padding: "12px 25px",
     background: "#4f46e5",
     color: "white",
-    borderRadius: "8px",
+    borderRadius: "10px",
     border: "none",
   },
 };
