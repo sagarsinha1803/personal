@@ -146,12 +146,3 @@ const styles = {
     fontWeight: "bold",
   },
 };
-
-
-
-index.css
-
-@keyframes typing {
-  from { transform: translateY(0); opacity: 0.5; }
-  to { transform: translateY(-5px); opacity: 1; }
-}
