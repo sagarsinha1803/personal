@@ -1,135 +1,85 @@
-src/
- ├── components/
- │     ├── ChatMessage.js
- │     ├── Loader.js
- │     ├── ApprovalModal.js
- ├── App.js
- ├── api.js
- └── index.css
+import React, { useState, useRef } from "react";
 
+export default function App() {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const inputRef = useRef(null);
 
-ChatMessage.js
+  const sendMessage = async () => {
+    const text = inputRef.current.value.trim();
+    if (!text) return;
 
-import React from "react";
+    // Add user message
+    setMessages((prev) => [...prev, { sender: "user", text }]);
+    inputRef.current.value = "";
 
-export default function ChatMessage({ sender, text }) {
-  const isUser = sender === "user";
+    setLoading(true);
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: isUser ? "flex-end" : "flex-start",
-        marginBottom: "10px",
-      }}
-    >
-      <div
-        style={{
-          maxWidth: "70%",
-          padding: "12px 16px",
-          borderRadius: "12px",
-          background: isUser ? "#4f46e5" : "#e4e4e7",
-          color: isUser ? "white" : "black",
-          fontSize: "15px",
-        }}
-      >
-        {text}
-      </div>
-    </div>
-  );
-}
+    // Start SSE stream
+    const stream = new EventSource(
+      `http://localhost:8000/agent/chat_stream?message=${encodeURIComponent(text)}`
+    );
 
+    stream.onmessage = (event) => {
+      const data = JSON.parse(event.data);
 
+      // Normal AI Response
+      if (data.type === "ai_response") {
+        setMessages((prev) => [...prev, { sender: "ai", text: data.text }]);
+      }
 
-Loader.js
+      // End streaming
+      if (data.type === "end") {
+        setLoading(false);
+        stream.close();
+      }
+    };
 
-import React from "react";
-import "./loader.css";
-
-export default function Loader() {
-  return (
-    <div className="typing-loader">
-      <span></span><span></span><span></span>
-    </div>
-  );
-}
-
-
-loader.css
-
-.typing-loader {
-  display: flex;
-  gap: 6px;
-  margin: 10px 0;
-}
-
-.typing-loader span {
-  width: 8px;
-  height: 8px;
-  background: #4f46e5;
-  border-radius: 50%;
-  animation: typing 0.7s infinite ease-in-out alternate;
-}
-
-.typing-loader span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.typing-loader span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes typing {
-  from { transform: translateY(0); opacity: 0.5; }
-  to { transform: translateY(-6px); opacity: 1; }
-}
-
-
-
-
-ApprovalModal.js
-
-
-import React, { useState } from "react";
-
-export default function ApprovalModal({ open, interrupt, onAction }) {
-  const [updateText, setUpdateText] = useState("");
-
-  if (!open) return null;
+    stream.onerror = () => {
+      stream.close();
+      setLoading(false);
+    };
+  };
 
   return (
     <div style={styles.container}>
-      <div style={styles.card}>
-        <h3 style={styles.title}>⚠ Human Approval Required</h3>
+      <h2 style={styles.header}>AI Assistant</h2>
 
-        <p style={styles.text}>
-          The model wants to run this tool:
-        </p>
+      <div style={styles.chatBox}>
+        {messages.map((msg, i) => (
+          <div
+            key={i}
+            style={{
+              ...styles.bubble,
+              alignSelf: msg.sender === "user" ? "flex-end" : "flex-start",
+              background: msg.sender === "user" ? "#4f46e5" : "#e4e4e7",
+              color: msg.sender === "user" ? "white" : "black",
+            }}
+          >
+            {msg.text}
+          </div>
+        ))}
 
-        <pre style={styles.code}>
-{JSON.stringify(interrupt.tool_call, null, 2)}
-        </pre>
+        {loading && (
+          <div style={styles.loaderContainer}>
+            <div style={styles.dot}></div>
+            <div style={{ ...styles.dot, animationDelay: "0.2s" }}></div>
+            <div style={{ ...styles.dot, animationDelay: "0.4s" }}></div>
+          </div>
+        )}
+      </div>
 
-        <div style={{ marginTop: 15 }}>
-          <button style={styles.btnContinue} onClick={() => onAction("continue", null)}>
-            ✔ Continue
-          </button>
-
-          <textarea
-            placeholder="Enter updated arguments (JSON)"
-            style={styles.textarea}
-            value={updateText}
-            onChange={(e) => setUpdateText(e.target.value)}
-          />
-
-          <button style={styles.btnUpdate} onClick={() => onAction("update", updateText)}>
-            🔄 Update Arguments
-          </button>
-
-          <button style={styles.btnReject} onClick={() => onAction("feedback", "Rejected by user")}>
-            ❌ Reject
-          </button>
-        </div>
+      <div style={styles.inputBox}>
+        <input
+          ref={inputRef}
+          type="text"
+          placeholder="Type a message..."
+          style={styles.input}
+          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+        />
+        <button style={styles.button} onClick={sendMessage}>
+          Send
+        </button>
       </div>
     </div>
   );
@@ -137,143 +87,71 @@ export default function ApprovalModal({ open, interrupt, onAction }) {
 
 const styles = {
   container: {
-    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-    background: "rgba(0,0,0,0.3)",
-    display: "flex", justifyContent: "center", alignItems: "center",
-    zIndex: 1000,
+    width: "600px",
+    margin: "auto",
+    padding: "20px",
+    fontFamily: "Arial, sans-serif",
   },
-  card: {
-    background: "white",
-    width: 450,
-    padding: 20,
-    borderRadius: 12,
-    boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
+  header: {
+    textAlign: "center",
   },
-  title: { margin: 0, marginBottom: 10 },
-  text: { fontSize: 14 },
-  code: {
-    background: "#f4f4f5",
-    padding: 10,
-    borderRadius: 8,
-    fontSize: 13,
-    overflowX: "auto",
+  chatBox: {
+    height: "450px",
+    border: "1px solid #ddd",
+    borderRadius: "10px",
+    padding: "15px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "10px",
+    overflowY: "auto",
+    background: "#fafafa",
   },
-  textarea: {
-    width: "100%", height: 70,
-    marginTop: 8, padding: 8,
-    borderRadius: 6, border: "1px solid #ccc",
+  bubble: {
+    maxWidth: "75%",
+    padding: "12px 16px",
+    borderRadius: "12px",
+    fontSize: "14px",
   },
-  btnContinue: {
-    width: "100%", padding: 10, background: "#22c55e",
-    border: "none", borderRadius: 8, color: "white",
-    fontSize: 15, cursor: "pointer", marginBottom: 8,
+  loaderContainer: {
+    display: "flex",
+    gap: "6px",
+    marginTop: "5px",
+    alignSelf: "flex-start",
   },
-  btnUpdate: {
-    width: "100%", padding: 10, background: "#3b82f6",
-    borderRadius: 8, color: "white", border: "none",
-    fontSize: 15, cursor: "pointer", marginTop: 8,
+  dot: {
+    width: "8px",
+    height: "8px",
+    borderRadius: "50%",
+    background: "#4f46e5",
+    animation: "typing 0.7s infinite alternate",
   },
-  btnReject: {
-    width: "100%", padding: 10, background: "#ef4444",
-    borderRadius: 8, color: "white", border: "none",
-    fontSize: 15, cursor: "pointer", marginTop: 8,
+  inputBox: {
+    marginTop: "15px",
+    display: "flex",
+    gap: "10px",
+  },
+  input: {
+    flex: 1,
+    padding: "12px",
+    borderRadius: "8px",
+    border: "1px solid #ccc",
+  },
+  button: {
+    padding: "12px 18px",
+    background: "#4f46e5",
+    color: "white",
+    border: "none",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontWeight: "bold",
   },
 };
 
 
 
+index.css
 
-
-App.js
-
-import React, { useState, useRef } from "react";
-import ChatMessage from "./components/ChatMessage";
-import Loader from "./components/Loader";
-import ApprovalModal from "./components/ApprovalModal";
-
-function App() {
-  const [messages, setMessages] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [interrupt, setInterrupt] = useState(null);
-
-  const checkpoint = useRef(null);
-
-  const sendMessage = async (text) => {
-    setMessages((m) => [...m, { sender: "user", text }]);
-    setLoading(true);
-
-    const response = new EventSource("http://localhost:8000/agent/chat_stream?message=" + encodeURIComponent(text));
-
-    response.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === "human_approval_required") {
-        checkpoint.current = data.checkpoint_id;
-        setInterrupt(data.interrupt);
-        response.close();
-        setLoading(false);
-        return;
-      }
-
-      if (data.type === "ai_response") {
-        setMessages((m) => [...m, { sender: "ai", text: data.text }]);
-      }
-    };
-
-    response.onerror = () => {
-      response.close();
-      setLoading(false);
-    };
-  };
-
-  const handleAction = async (action, data) => {
-    setInterrupt(null);
-    setLoading(true);
-
-    const res = await fetch("http://localhost:8000/agent/resume_stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        checkpoint_id: checkpoint.current,
-        action,
-        data,
-      }),
-    });
-
-    const stream = new EventSource("http://localhost:8000/agent/resume_stream_sse?checkpoint_id=" + checkpoint.current);
-
-    stream.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === "ai_response") {
-        setMessages((m) => [...m, { sender: "ai", text: data.text }]);
-        setLoading(false);
-      }
-    };
-  };
-
-  return (
-    <div style={{ padding: 20, width: 600, margin: "auto" }}>
-      <h2>AI Assistant</h2>
-
-      <div style={{ height: 450, overflowY: "auto", border: "1px solid #ddd", padding: 12, borderRadius: 8 }}>
-        {messages.map((msg, i) => (
-          <ChatMessage key={i} sender={msg.sender} text={msg.text} />
-        ))}
-
-        {loading && <Loader />}
-      </div>
-
-      <input
-        type="text"
-        placeholder="Type a message..."
-        style={{ width: "100%", padding: 12, marginTop: 10 }}
-        onKeyDown={(e) => e.key === "Enter" && sendMessage(e.target.value)}
-      />
-
-      <ApprovalModal open={!!interrupt} interrupt={interrupt} onAction={handleAction} />
-    </div>
-  );
+@keyframes typing {
+  from { transform: translateY(0); opacity: 0.5; }
+  to { transform: translateY(-5px); opacity: 1; }
 }
-
-export default App;
