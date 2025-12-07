@@ -7,7 +7,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const toolOutputRef = useRef("");
-  const isProcessingTool = useRef(false); // ⭐ CRITICAL FIX FLAG
+  const aiBufferRef = useRef("");  // ⭐ NORMAL AI RESPONSE BUFFER
+  const isProcessingTool = useRef(false);
 
   useEffect(() => {
     setMessages([
@@ -32,8 +33,9 @@ export default function App() {
       checkpoint_id: checkpointId || null,
     };
 
-    toolOutputRef.current = "";
-    isProcessingTool.current = false; // ⭐ Reset before request
+    aiBufferRef.current = "";       // ⭐ reset AI buffer
+    toolOutputRef.current = "";  
+    isProcessingTool.current = false;
 
     setLoading(true);
 
@@ -53,8 +55,9 @@ export default function App() {
       const chunk = decoder.decode(value);
       const lines = chunk.split("\n");
 
-      for (const line of lines) {
+      for (let line of lines) {
         if (!line.startsWith("data:")) continue;
+
         const jsonStr = line.replace("data:", "").trim();
         if (!jsonStr) continue;
 
@@ -65,7 +68,7 @@ export default function App() {
           continue;
         }
 
-        // checkpoint update
+        // checkpoint sync
         if (event.checkpoint_id) {
           setCheckpointId(event.checkpoint_id);
         }
@@ -74,7 +77,7 @@ export default function App() {
         // TOOL CALL
         // =======================
         if (event.type === "tool_call") {
-          isProcessingTool.current = true; // ⭐ tool mode ON
+          isProcessingTool.current = true;
 
           const toolBubble = {
             type: "tool_call",
@@ -95,18 +98,28 @@ export default function App() {
         }
 
         // =======================
-        // MESSAGE EVENT
+        // MESSAGE (AI / TOOL OUTPUT)
         // =======================
         if (event.type === "message") {
           if (isProcessingTool.current) {
-            // ⭐ This is tool output
+            // TOOL OUTPUT
             toolOutputRef.current += event.content;
           } else {
-            // ⭐ NORMAL AI RESPONSE → ALWAYS append at bottom
-            setMessages((prev) => [
-              ...prev,
-              { type: "ai", text: event.content },
-            ]);
+            // ⭐ NORMAL AI RESPONSE → BUFFER IT
+            aiBufferRef.current += event.content;
+
+            // Update last AI bubble live
+            setMessages((prev) => {
+              const lastIndex = prev.length - 1;
+
+              if (lastIndex >= 0 && prev[lastIndex].type === "ai") {
+                const updated = [...prev];
+                updated[lastIndex].text = aiBufferRef.current;
+                return updated;
+              }
+
+              return [...prev, { type: "ai", text: aiBufferRef.current }];
+            });
           }
         }
       }
@@ -132,7 +145,8 @@ export default function App() {
       });
     }
 
-    isProcessingTool.current = false; // reset
+    aiBufferRef.current = "";
+    isProcessingTool.current = false;
     setLoading(false);
   };
 
@@ -201,7 +215,8 @@ export default function App() {
   );
 }
 
-// STYLES ============
+
+// ⛑ STYLE
 const styles = {
   page: { width: "750px", margin: "40px auto", fontFamily: "Arial" },
   title: { textAlign: "center", marginBottom: "10px" },
