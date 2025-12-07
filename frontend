@@ -2,45 +2,52 @@ import React, { useState, useEffect, useRef } from "react";
 
 export default function App() {
   const [input, setInput] = useState("");
-  const [checkpointId, setCheckpointId] = useState("");
   const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const [checkpointId, setCheckpointId] = useState("");
   const toolOutputRef = useRef("");
 
-  // First-time greeting
+  // -------------------------------------------------
+  // AUTO GREETING ON LOAD
+  // -------------------------------------------------
   useEffect(() => {
     setMessages([
       {
         type: "ai",
-        text: `Hello! 👋 I'm your AI Assistant.\nI can help with device details, troubleshooting, SSH automation and more.\n\nHow can I assist you today? 😊`,
+        text:
+          "Hello! 👋 I'm your AI Assistant.\nI can help you with device details, troubleshooting, SSH automation and more.\n\nHow can I assist you today? 😊",
       },
     ]);
   }, []);
 
+  // -------------------------------------------------
+  // SEND MESSAGE
+  // -------------------------------------------------
   const sendMessage = async () => {
     if (!input.trim()) return;
 
     const userMsg = input;
-    setInput("");
-
-    // Add user message
     setMessages((prev) => [...prev, { type: "user", text: userMsg }]);
 
     const payload = {
       message: userMsg,
       protected_mode: false,
-      checkpoint_id: checkpointId || null
+      checkpoint_id: checkpointId || null,
     };
+
+    setInput("");
+    setLoading(true);
+    toolOutputRef.current = "";
 
     const response = await fetch("http://localhost:8000/agent/chat_stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    toolOutputRef.current = "";
-    let toolCallInserted = false;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -52,7 +59,7 @@ export default function App() {
       for (let line of lines) {
         if (!line.startsWith("data:")) continue;
 
-        let jsonStr = line.replace("data:", "").trim();
+        const jsonStr = line.replace("data:", "").trim();
         if (!jsonStr) continue;
 
         let event;
@@ -62,16 +69,16 @@ export default function App() {
           continue;
         }
 
-        // Save checkpoint id
+        // UPDATE CHECKPOINT IN UI
         if (event.checkpoint_id) {
           setCheckpointId(event.checkpoint_id);
         }
 
-        // ------- TOOL CALL -------
+        // -------------------------------------------------
+        // TOOL CALL BUBBLE (insert below last user message)
+        // -------------------------------------------------
         if (event.type === "tool_call") {
-          toolCallInserted = true;
-
-          const newToolCall = {
+          const toolBubble = {
             type: "tool_call",
             tool: event.tool,
             args: event.args,
@@ -81,38 +88,48 @@ export default function App() {
             const lastUserIndex = prev.map((m) => m.type).lastIndexOf("user");
             const before = prev.slice(0, lastUserIndex + 1);
             const after = prev.slice(lastUserIndex + 1);
-            return [...before, newToolCall, ...after];
+            return [...before, toolBubble, ...after];
           });
 
           continue;
         }
 
-        // ------- TOOL OUTPUT -------
+        // -------------------------------------------------
+        // TOOL OUTPUT STREAM APPEND (store temporarily)
+        // -------------------------------------------------
         if (event.type === "message") {
-          if (toolCallInserted) {
-            toolOutputRef.current += event.content;
-            continue;
-          }
-
-          // Regular assistant message
-          setMessages((prev) => [
-            ...prev,
-            { type: "ai", text: event.content }
-          ]);
+          toolOutputRef.current += event.content;
         }
       }
     }
 
-    // Add tool output after tool call
-    if (toolOutputRef.current) {
-      setMessages((prev) => [
-        ...prev,
-        { type: "tool_output", text: toolOutputRef.current }
-      ]);
+    // -------------------------------------------------
+    // FINAL TOOL OUTPUT BUBBLE — Insert below tool_call
+    // -------------------------------------------------
+    if (toolOutputRef.current.trim() !== "") {
+      const outBubble = {
+        type: "tool_output",
+        text: toolOutputRef.current,
+      };
+
+      setMessages((prev) => {
+        const lastToolIndex = prev.map((m) => m.type).lastIndexOf("tool_call");
+
+        // If no tool_call found, append at bottom
+        if (lastToolIndex === -1) return [...prev, outBubble];
+
+        const before = prev.slice(0, lastToolIndex + 1);
+        const after = prev.slice(lastToolIndex + 1);
+        return [...before, outBubble, ...after];
+      });
     }
+
+    setLoading(false);
   };
 
-  // --- Render Message Bubbles ---
+  // -------------------------------------------------
+  // BUBBLE RENDERING
+  // -------------------------------------------------
   const renderBubble = (msg) => {
     if (msg.type === "user")
       return <div style={styles.userMsg}>{msg.text}</div>;
@@ -120,7 +137,7 @@ export default function App() {
     if (msg.type === "ai")
       return (
         <div style={styles.aiMsg}>
-          <pre style={styles.pre}>{msg.text}</pre>
+          <pre style={{ whiteSpace: "pre-wrap" }}>{msg.text}</pre>
         </div>
       );
 
@@ -128,7 +145,7 @@ export default function App() {
       return (
         <div style={styles.toolCall}>
           <strong>🛠 TOOL CALL: {msg.tool}</strong>
-          <pre style={styles.pre}>
+          <pre style={{ whiteSpace: "pre-wrap" }}>
             {JSON.stringify(msg.args, null, 2)}
           </pre>
         </div>
@@ -137,36 +154,44 @@ export default function App() {
     if (msg.type === "tool_output")
       return (
         <div style={styles.toolOutput}>
-          <pre style={styles.pre}>{msg.text}</pre>
+          <pre style={{ whiteSpace: "pre-wrap" }}>{msg.text}</pre>
         </div>
       );
   };
 
+  // -------------------------------------------------
+  // MAIN UI
+  // -------------------------------------------------
   return (
     <div style={styles.page}>
-      {/* Checkpoint ID Box */}
-      <div style={styles.cpRow}>
+      <h2 style={styles.title}>AI Assistant</h2>
+
+      {/* CHECKPOINT INPUT */}
+      <div style={styles.checkpointRow}>
         <label>Checkpoint ID:</label>
+
         <input
-          style={styles.cpInput}
           value={checkpointId}
-          placeholder="Enter checkpoint id"
           onChange={(e) => setCheckpointId(e.target.value)}
+          placeholder="Enter checkpoint ID"
+          style={styles.checkpointInput}
         />
       </div>
 
-      <h2 style={styles.title}>AI Assistant</h2>
-
+      {/* CHAT WINDOW */}
       <div style={styles.chatBox}>
         {messages.map((msg, i) => (
           <div key={i}>{renderBubble(msg)}</div>
         ))}
+
+        {loading && <div style={styles.loading}>Processing...</div>}
       </div>
 
+      {/* INPUT BOX */}
       <div style={styles.inputBar}>
         <input
           style={styles.input}
-          placeholder="Type a message…"
+          placeholder="Type a message..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
@@ -178,78 +203,94 @@ export default function App() {
   );
 }
 
+// -------------------------------------------------
+// STYLES
+// -------------------------------------------------
 const styles = {
-  page: { width: "900px", margin: "0 auto", fontFamily: "Arial" },
+  page: {
+    width: "750px",
+    margin: "40px auto",
+    fontFamily: "Arial",
+  },
 
   title: { textAlign: "center", marginBottom: "10px" },
 
-  chatBox: {
-    height: "550px",
-    overflowY: "auto",
-    background: "#fafafa",
-    borderRadius: "10px",
-    padding: "15px",
+  checkpointRow: {
+    display: "flex",
+    alignItems: "center",
+    marginBottom: "10px",
+    gap: "10px",
+  },
+
+  checkpointInput: {
+    flex: 1,
+    padding: "8px",
+    borderRadius: "6px",
     border: "1px solid #ccc",
   },
 
-  pre: { margin: 0, whiteSpace: "pre-wrap", wordWrap: "break-word" },
-
-  cpRow: { marginBottom: "10px", display: "flex", gap: "10px" },
-  cpInput: {
-    padding: "6px",
-    borderRadius: "6px",
-    border: "1px solid #aaa",
+  chatBox: {
+    height: "500px",
+    overflowY: "auto",
+    border: "1px solid #ddd",
+    borderRadius: "12px",
+    padding: "15px",
+    background: "#fafafa",
   },
 
   userMsg: {
     textAlign: "right",
     background: "#4f46e5",
     color: "white",
-    padding: "10px",
+    padding: "10px 15px",
     borderRadius: "10px",
-    marginTop: "10px",
-    marginLeft: "200px",
+    margin: "8px 0 8px 150px",
   },
 
   aiMsg: {
     textAlign: "left",
     background: "#e5e7eb",
-    padding: "10px",
+    padding: "10px 15px",
     borderRadius: "10px",
-    marginTop: "10px",
-    marginRight: "200px",
+    margin: "8px 150px 8px 0",
   },
 
   toolCall: {
-    background: "#fff5d1",
+    background: "#fff4d6",
+    borderLeft: "5px solid #f0b94b",
     padding: "10px",
-    border: "1px solid #f1cf6b",
-    borderRadius: "10px",
-    marginTop: "10px",
+    borderRadius: "8px",
+    marginTop: "8px",
   },
 
   toolOutput: {
-    background: "#e3f0ff",
+    background: "#e3f1ff",
+    borderLeft: "5px solid #6fb2ff",
     padding: "10px",
-    border: "1px solid #a7cdfc",
-    borderRadius: "10px",
+    borderRadius: "8px",
+    marginTop: "8px",
+  },
+
+  loading: {
+    color: "#777",
     marginTop: "10px",
   },
 
-  inputBar: { display: "flex", marginTop: "10px" },
+  inputBar: { display: "flex", marginTop: "15px" },
+
   input: {
     flex: 1,
     padding: "12px",
-    borderRadius: "10px",
+    borderRadius: "8px",
     border: "1px solid #ccc",
   },
 
   sendBtn: {
     marginLeft: "10px",
-    padding: "12px 20px",
+    padding: "12px 25px",
     background: "#4f46e5",
     color: "white",
-    borderRadius: "10px",
+    borderRadius: "8px",
     border: "none",
   },
 };
