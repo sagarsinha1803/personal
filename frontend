@@ -7,8 +7,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const toolOutputRef = useRef("");
-  const aiBufferRef = useRef("");  // ⭐ NORMAL AI RESPONSE BUFFER
-  const isProcessingTool = useRef(false);
+  const aiBufferRef = useRef("");         // ⭐ AI merged buffer
+  const isProcessingTool = useRef(false); // ⭐ track tool mode
 
   useEffect(() => {
     setMessages([
@@ -33,8 +33,9 @@ export default function App() {
       checkpoint_id: checkpointId || null,
     };
 
-    aiBufferRef.current = "";       // ⭐ reset AI buffer
-    toolOutputRef.current = "";  
+    // reset buffers
+    toolOutputRef.current = "";
+    aiBufferRef.current = "";
     isProcessingTool.current = false;
 
     setLoading(true);
@@ -55,7 +56,7 @@ export default function App() {
       const chunk = decoder.decode(value);
       const lines = chunk.split("\n");
 
-      for (let line of lines) {
+      for (const line of lines) {
         if (!line.startsWith("data:")) continue;
 
         const jsonStr = line.replace("data:", "").trim();
@@ -68,10 +69,8 @@ export default function App() {
           continue;
         }
 
-        // checkpoint sync
-        if (event.checkpoint_id) {
-          setCheckpointId(event.checkpoint_id);
-        }
+        // checkpoint update
+        if (event.checkpoint_id) setCheckpointId(event.checkpoint_id);
 
         // =======================
         // TOOL CALL
@@ -98,36 +97,36 @@ export default function App() {
         }
 
         // =======================
-        // MESSAGE (AI / TOOL OUTPUT)
+        // MESSAGE EVENT
         // =======================
         if (event.type === "message") {
+          // TOOL OUTPUT
           if (isProcessingTool.current) {
-            // TOOL OUTPUT
             toolOutputRef.current += event.content;
-          } else {
-            // ⭐ NORMAL AI RESPONSE → BUFFER IT
-            aiBufferRef.current += event.content;
-
-            // Update last AI bubble live
-            setMessages((prev) => {
-              const lastIndex = prev.length - 1;
-
-              if (lastIndex >= 0 && prev[lastIndex].type === "ai") {
-                const updated = [...prev];
-                updated[lastIndex].text = aiBufferRef.current;
-                return updated;
-              }
-
-              return [...prev, { type: "ai", text: aiBufferRef.current }];
-            });
+            continue;
           }
+
+          // NORMAL AI OUTPUT → MERGE BUFFER
+          aiBufferRef.current += event.content;
+
+          setMessages((prev) => {
+            const lastIndex = prev.length - 1;
+
+            // Update last AI bubble if exists
+            if (lastIndex >= 0 && prev[lastIndex].type === "ai") {
+              const updated = [...prev];
+              updated[lastIndex].text = aiBufferRef.current;
+              return updated;
+            }
+
+            // Otherwise create new AI bubble
+            return [...prev, { type: "ai", text: aiBufferRef.current }];
+          });
         }
       }
     }
 
-    // =======================
     // FINAL TOOL OUTPUT
-    // =======================
     if (toolOutputRef.current.trim()) {
       const outBubble = {
         type: "tool_output",
@@ -215,8 +214,7 @@ export default function App() {
   );
 }
 
-
-// ⛑ STYLE
+// styles
 const styles = {
   page: { width: "750px", margin: "40px auto", fontFamily: "Arial" },
   title: { textAlign: "center", marginBottom: "10px" },
